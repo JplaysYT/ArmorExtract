@@ -7,7 +7,9 @@ class ItemsAdder:
     def __init__(self):
         self.armors_rendering = {}
         self.furnace_data = {"items": {}}
-        self.item_ids = Utils.load_yaml("ItemsAdder/storage/items_ids_cache.yml")
+        self.item_ids = Utils.load_yaml("ItemsAdder/storage/items_ids_cache.yml") or {}
+        if not self.item_ids:
+            print("[WARN] items_ids_cache.yml not found or empty; no items will be mapped.")
 
     def extract(self):
         os.makedirs("output/itemsadder", exist_ok=True)
