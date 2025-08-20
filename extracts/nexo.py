@@ -8,55 +8,86 @@ class Nexo:
     def __init__(self):
         self.furnace_data = {"items": {}}
         self.armor_types = ["HELMET", "CHESTPLATE", "LEGGINGS", "BOOTS"]
+        self.assets_root = None  # resolved after unzip
 
     def extract(self):
         os.makedirs("output/nexo", exist_ok=True)
-        with ZipFile("Nexo/pack/pack.zip") as z: z.extractall("Nexo/pack")
+
+        # 1) Unzip and resolve assets root robustly
+        zip_path = "Nexo/pack/pack.zip"
+        if not os.path.exists(zip_path):
+            raise FileNotFoundError(f"Missing zip: {zip_path}")
+        with ZipFile(zip_path) as z:
+            z.extractall("Nexo/pack")
+
+        self.assets_root = self._find_assets_root("Nexo/pack")
+        if not self.assets_root:
+            raise RuntimeError("Could not locate an 'assets' folder under Nexo/pack after extraction.")
+
+        # 2) Load YAMLs safely
         data_files = glob.glob("Nexo/items/**/*.yml", recursive=True)
+        if not data_files:
+            print("[WARN] No YAML files found under Nexo/items/**.yml")
+
         for file in data_files:
             data = Utils.load_yaml(file)
+            if not isinstance(data, dict):
+                print(f"[WARN] Skipping YAML (not a dict or empty): {file}")
+                continue
+
             for item_id, item in data.items():
-                material = item.get("material", "")
-                model_id = item.get("Pack", {}).get("custom_model_data")
-                if not model_id or not any(t in material for t in self.armor_types): continue
-                textures = item.get("Pack", {}).get("textures") or [item.get("Pack", {}).get("texture")]
-                textures = [t for t in textures if t]
+                if not isinstance(item, dict):
+                    print(f"[WARN] {file} -> item '{item_id}' is not a dict; skipping")
+                    continue
+
+                material = item.get("material") or ""
+                pack = item.get("Pack") or {}  # tolerate null
+                if not isinstance(pack, dict):
+                    print(f"[WARN] {file} -> item '{item_id}' has non-dict 'Pack'; skipping")
+                    continue
+
+                model_id = pack.get("custom_model_data")
+                if model_id in (None, ""):
+                    # No model id → nothing to map
+                    continue
+
+                # Only process armor materials
+                if not any(t in material for t in self.armor_types):
+                    continue
+
+                # Gather textures (could be a string or a list)
+                textures = pack.get("textures")
+                if isinstance(textures, str):
+                    textures = [textures]
+                elif not isinstance(textures, list):
+                    textures = []
+
+                fallback_tex = pack.get("texture")
+                if fallback_tex:
+                    textures.append(fallback_tex)
+
+                # normalize list: remove falsy & duplicates preserving order
+                seen = set()
+                textures = [t for t in textures if t and not (t in seen or seen.add(t))]
+                if not textures:
+                    print(f"[WARN] {file} -> item '{item_id}' has no textures; skipping")
+                    continue
+
+                armor_type = self.get_armor_type(material).lower()
+
                 for tex in textures:
-                    armor_type = self.get_armor_type(material).lower()
-                    texture_path = self.build_texture_path(tex, armor_type)
-                    full_src = os.path.join("Nexo/pack/assets", texture_path)
+                    texture_path = self.build_texture_path(tex, armor_type)  # relative path under assets
+                    full_src = os.path.join(self.assets_root, texture_path)
+
                     if not os.path.exists(full_src):
-                        full_src = self.find_alternative_path(texture_path)
-                        if not full_src:
-                            print(f"Missing texture: {texture_path}")
+                        # Try to find a close alternative
+                        alt = self.find_alternative_path(texture_path)
+                        if not alt:
+                            print(f"[WARN] Missing texture: {texture_path} (looked under {self.assets_root})")
                             continue
-                        texture_path = os.path.relpath(full_src, "Nexo/pack/assets").replace("\\", "/")
+                        full_src = alt
+                        # Recompute the relative texture path under assets for Geyser furnace.json
+                        texture_path = os.path.relpath(full_src, self.assets_root).replace("\\", "/")
 
-                    dst_path = os.path.join("output/nexo/textures/models", texture_path)
-                    os.makedirs(os.path.dirname(dst_path), exist_ok=True)
-                    shutil.copy(full_src, dst_path)
-
-                    self.furnace_data["items"].setdefault(f"minecraft:{material}".lower(), {}).setdefault("custom_model_data", {})[model_id] = {
-                        "armor_layer": {
-                            "type": armor_type,
-                            "texture": f"textures/models/{texture_path}",
-                            "auto_copy_texture": False
-                        }
-                    }
-
-        Utils.save_json("output/nexo/furnace.json", self.furnace_data)
-
-    def get_armor_type(self, material: str) -> str:
-        return next((t for t in self.armor_types if t in material), "UNKNOWN")
-
-    def build_texture_path(self, tex: str, armor_type: str) -> str:
-        base = tex.replace(":", "/textures/") if ":" in tex else f"minecraft/textures/{tex}"
-        layer = "layer_2" if "leggings" in armor_type else "layer_1"
-        prefix = os.path.basename(base).split("_")[0]
-        return f"{os.path.dirname(base)}/{prefix}_armor_{layer}.png"
-
-    def find_alternative_path(self, original_path: str) -> str | None:
-        base = os.path.basename(original_path)
-        pattern = f"{os.path.dirname(original_path)}/{base.split('_')[0]}**_{base.split('_', 1)[-1]}"
-        matches = glob.glob(f"Nexo/pack/assets/{pattern}", recursive=True)
-        return matches[0] if matches else None
+                    # Copy to output
+                    dst_path = os.path.join("output/nexo/text_
