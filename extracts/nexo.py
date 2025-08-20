@@ -90,4 +90,74 @@ class Nexo:
                         texture_path = os.path.relpath(full_src, self.assets_root).replace("\\", "/")
 
                     # Copy to output
-                    dst_path = os.path.join("output/nexo/text_
+                    dst_path = os.path.join("output/nexo/textures/models", texture_path)
+                    os.makedirs(os.path.dirname(dst_path), exist_ok=True)
+                    shutil.copy(full_src, dst_path)
+
+                    # Insert into furnace mapping (stringify model id for JSON safety)
+                    self.furnace_data["items"] \
+                        .setdefault(f"minecraft:{material}".lower(), {}) \
+                        .setdefault("custom_model_data", {})[str(model_id)] = {
+                            "armor_layer": {
+                                "type": armor_type,
+                                "texture": f"textures/models/{texture_path}",
+                                "auto_copy_texture": False
+                            }
+                        }
+
+        Utils.save_json("output/nexo/furnace.json", self.furnace_data)
+
+    # ---------- helpers ----------
+
+    def _find_assets_root(self, root_dir: str) -> str | None:
+        """
+        After extracting the zip, find the first directory that looks like an 'assets' root,
+        e.g., Nexo/pack/assets or Nexo/pack/SomeFolder/assets, etc.
+        """
+        # exact match first
+        direct = os.path.join(root_dir, "assets")
+        if os.path.isdir(direct):
+            return direct
+
+        # fallback: search for 'assets' folder anywhere under root_dir
+        for path in glob.glob(os.path.join(root_dir, "**", "assets"), recursive=True):
+            if os.path.isdir(path):
+                return path
+        return None
+
+    def get_armor_type(self, material: str) -> str:
+        return next((t for t in self.armor_types if t in (material or "")), "UNKNOWN")
+
+    def build_texture_path(self, tex: str, armor_type: str) -> str:
+        """
+        Convert a Nexo texture reference into an assets-relative path that points to a PNG
+        for the armor layer.
+
+        Examples:
+          - "minecraft:foo/bar_baz" -> "minecraft/textures/foo/bar_armor_layer_1.png"
+          - "custompack:my_ns/my_helmet" -> "custompack/textures/my_ns/my_armor_layer_1.png"
+          - "foo/bar" (no namespace) -> "minecraft/textures/foo/bar_armor_layer_1.png"
+        """
+        base = tex.replace(":", "/textures/") if ":" in tex else f"minecraft/textures/{tex}"
+        layer = "layer_2" if "leggings" in (armor_type or "") else "layer_1"
+        # use the prefix up to the first underscore to construct "{prefix}_armor_layer_X.png"
+        fname = os.path.basename(base)
+        prefix = fname.split("_")[0] if "_" in fname else os.path.splitext(fname)[0]
+        return f"{os.path.dirname(base)}/{prefix}_armor_{layer}.png"
+
+    def find_alternative_path(self, original_path: str) -> str | None:
+        """
+        Try a fuzzier glob to find a similarly-named armor texture if the exact path isn't present.
+        E.g., turn "ns/textures/foo/bar_armor_layer_1.png" into
+              "ns/textures/foo/{prefix}**_armor_layer_1.png"
+        """
+        base = os.path.basename(original_path)
+        dirname = os.path.dirname(original_path)
+        if "_" in base:
+            head, tail = base.split("_", 1)
+        else:
+            head, tail = os.path.splitext(base)[0], base
+
+        pattern = f"{dirname}/{head}**_{tail}"
+        matches = glob.glob(os.path.join(self.assets_root, pattern), recursive=True)
+        return matches[0] if matches else None
